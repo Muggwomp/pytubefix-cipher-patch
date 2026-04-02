@@ -616,6 +616,16 @@ class Cipher:
         # We want the LAST if(...)label:{ before the split, which is the actual
         # nsig branch guard (not an earlier unrelated branch).
         X = None
+        mask_branch_meta = None
+
+        def _eval_js_branch(cond_str: str, pname: str, x_candidate: int) -> bool:
+            expr = re.sub(
+                r'\b' + re.escape(pname) + r'\b',
+                str(x_candidate), cond_str
+            )
+            expr = expr.replace('&&', ' and ').replace('||', ' or ')
+            expr = expr.replace('!', ' not ')
+            return bool(eval(expr))  # noqa: S307 - restricted branch syntax only
 
         # Pattern 1: !(P-C>>S) — older style, e.g. !(X-9>>3)
         for pname in param_names:
@@ -731,13 +741,7 @@ class Cipher:
                             if pname not in cond_str:
                                 continue
                             try:
-                                expr = re.sub(
-                                    r'\b' + re.escape(pname) + r'\b',
-                                    str(x_candidate), cond_str
-                                )
-                                expr = expr.replace('&&', ' and ').replace('||', ' or ')
-                                expr = expr.replace('!', ' not ')
-                                if eval(expr):  # noqa: S307
+                                if _eval_js_branch(cond_str, pname, x_candidate):
                                     triggers_other = True
                                     break
                             except Exception:
@@ -752,6 +756,51 @@ class Cipher:
                             break
                     if X is not None:
                         break
+
+        # Pattern 5: Bitmask-equality branch â€” e.g. (U&115)==U
+        # Some 2026 players route nsig through this branch, but low control
+        # values also trigger later helper branches that expect extra args.
+        # Prefer the first candidate that satisfies the mask while avoiding
+        # those helper branches.
+        if X is None:
+            for pname in param_names:
+                branch_m = re.search(
+                    r'if\s*\(\s*\(' + re.escape(pname) + r'\s*&\s*(\d+)\)\s*==\s*'
+                    + re.escape(pname) + r'\s*\)\s*[a-zA-Z_$]:\{',
+                    body
+                )
+                if not branch_m:
+                    continue
+
+                mask = int(branch_m.group(1))
+                extra_conds = []
+                extra_patterns = [
+                    r'\(\(\s*' + re.escape(pname) + r'\s*\|\s*\d+\)\s*&\s*\d+\)\s*<\s*\d+\s*&&\s*'
+                    r'\(\s*' + re.escape(pname) + r'\s*\^\s*\d+\)\s*>>\s*\d+\s*>=\s*0',
+                    r'\b' + re.escape(pname) + r'\s*-\s*\d+\s*>>\s*\d+\s*>=\s*0\s*&&\s*'
+                    r'\(\s*' + re.escape(pname) + r'\s*-\s*\d+\s*&\s*\d+\)\s*<\s*\d+',
+                    r'\(\s*' + re.escape(pname) + r'\s*\|\s*\d+\)\s*==\s*' + re.escape(pname),
+                ]
+                for extra_pat in extra_patterns:
+                    extra_conds.extend(m.group(0) for m in re.finditer(extra_pat, body))
+
+                for x_candidate in range(0, 256):
+                    if (x_candidate & mask) != x_candidate:
+                        continue
+                    try:
+                        if any(_eval_js_branch(cond, pname, x_candidate) for cond in extra_conds):
+                            continue
+                    except Exception:
+                        continue
+                    X = x_candidate
+                    F = I ^ X
+                    mask_branch_meta = (pname, mask, extra_conds)
+                    logger.debug(
+                        f"Bitmask-equality branch matched: ({pname}&{mask})=={pname}, X={X}"
+                    )
+                    break
+                if X is not None:
+                    break
 
         if X is None:
             # Collect ALL if(COND)label:{ conditions before the split,
@@ -788,13 +837,7 @@ class Cipher:
                         continue
                     for x_candidate in range(0, 256):
                         try:
-                            expr = re.sub(
-                                r'\b' + re.escape(pname) + r'\b',
-                                str(x_candidate), nsig_cond
-                            )
-                            expr = expr.replace('&&', ' and ').replace('||', ' or ')
-                            expr = expr.replace('!', ' not ')
-                            if eval(expr):  # noqa: S307 — safe: only digits and operators
+                            if _eval_js_branch(nsig_cond, pname, x_candidate):
                                 X = x_candidate
                                 F = I ^ X
                                 break
@@ -812,6 +855,22 @@ class Cipher:
         # Some branches may call r/W as a function or have other side effects, so we need
         # to try alternative X values that still satisfy the nsig branch condition.
         candidates = [[X, I ^ X]]
+
+        # For (p&mask)==p branches, keep a few more safe values that avoid the
+        # unrelated helper branches which expect extra parameters.
+        if mask_branch_meta is not None:
+            pname, mask, extra_conds = mask_branch_meta
+            for alt_x in range(X + 1, 256):
+                if (alt_x & mask) != alt_x:
+                    continue
+                try:
+                    if any(_eval_js_branch(cond, pname, alt_x) for cond in extra_conds):
+                        continue
+                except Exception:
+                    continue
+                candidates.append([alt_x, I ^ alt_x])
+                if len(candidates) >= 8:
+                    break
 
         # For (n|72)==n branches, try values that satisfy this but avoid problematic branches
         if (X | 72) == X:
