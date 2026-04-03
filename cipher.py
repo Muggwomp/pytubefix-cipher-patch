@@ -289,9 +289,10 @@ class Cipher:
 
                         # For mega-functions (>50KB), use a window around the catch block
                         # (the nsig branch) instead of the full function body.
-                        # The nsig branch and its labeled block are within ~2000 chars before the catch.
+                        # The nsig branch is near the catch, but some players also
+                        # place follow-up helper branches several hundred chars after it.
                         branch_start = max(actual_start, cm.start() - 2000)
-                        branch_end = min(len(js), cm.end() + 200)
+                        branch_end = min(len(js), cm.end() + 1200)
                         # Avoid duplicating the header when the function is small
                         # (branch_start <= actual_start + 200)
                         if branch_start <= actual_start + 200:
@@ -617,6 +618,7 @@ class Cipher:
         # nsig branch guard (not an earlier unrelated branch).
         X = None
         mask_branch_meta = None
+        or_branch_meta = None
 
         def _eval_js_branch(cond_str: str, pname: str, x_candidate: int) -> bool:
             expr = re.sub(
@@ -626,6 +628,54 @@ class Cipher:
             expr = expr.replace('&&', ' and ').replace('||', ' or ')
             expr = expr.replace('!', ' not ')
             return bool(eval(expr))  # noqa: S307 - restricted branch syntax only
+
+        def _normalize_js_cond(cond_str: str) -> str:
+            return re.sub(r'\s+', '', cond_str)
+
+        def _extract_if_conditions(src: str) -> list[str]:
+            conds = []
+            for if_match in re.finditer(r'if\s*\(', src):
+                open_idx = if_match.end() - 1
+                depth = 1
+                cond_end = None
+                for i in range(open_idx + 1, len(src)):
+                    if src[i] == '(':
+                        depth += 1
+                    elif src[i] == ')':
+                        depth -= 1
+                        if depth == 0:
+                            cond_end = i
+                            break
+                if cond_end is None:
+                    continue
+                conds.append(src[open_idx + 1:cond_end])
+            return conds
+
+        def _pick_branch_candidate(
+            pname: str, predicate, extra_conds: list[str]
+        ) -> Optional[tuple[int, list[str]]]:
+            best_x = None
+            best_hits = None
+            for x_candidate in range(0, 256):
+                if not predicate(x_candidate):
+                    continue
+                hits = []
+                for cond in extra_conds:
+                    if pname not in cond:
+                        continue
+                    try:
+                        if _eval_js_branch(cond, pname, x_candidate):
+                            hits.append(cond)
+                    except Exception:
+                        continue
+                if best_hits is None or len(hits) < len(best_hits):
+                    best_x = x_candidate
+                    best_hits = hits
+                    if not hits:
+                        break
+            if best_x is None:
+                return None
+            return best_x, best_hits or []
 
         # Pattern 1: !(P-C>>S) — older style, e.g. !(X-9>>3)
         for pname in param_names:
@@ -802,6 +852,63 @@ class Cipher:
                 if X is not None:
                     break
 
+        # Pattern 6: Or-equality branch - e.g. (n|8)==n or (I|40)==I
+        # Some 2026 players route nsig through this branch but neighboring
+        # helper branches also fire on low or even control values.
+        if X is None:
+            all_if_conds = _extract_if_conditions(body)
+            for pname in param_names:
+                branch_matches = list(re.finditer(
+                    r'if\s*\(\s*(?P<cond>\(\s*' + re.escape(pname) + r'\s*\|\s*'
+                    r'(?P<mask>\d+)\)\s*==\s*' + re.escape(pname) + r')\s*\)\s*'
+                    r'[a-zA-Z_$]:\{',
+                    pre_split
+                ))
+                if not branch_matches:
+                    continue
+                branch_m = branch_matches[-1]
+
+                mask = int(branch_m.group('mask'))
+                target_norm = _normalize_js_cond(branch_m.group('cond'))
+                extra_conds = []
+                for cond in all_if_conds:
+                    if pname not in cond:
+                        continue
+                    if _normalize_js_cond(cond) == target_norm:
+                        continue
+                    extra_conds.append(cond)
+
+                extra_patterns = [
+                    r'\(\s*' + re.escape(pname) + r'\s*[+-]\s*\d+\s*\^\s*\d+\)\s*[<>]=?\s*'
+                    + re.escape(pname) + r'\s*&&\s*\(\s*' + re.escape(pname)
+                    + r'\s*[+-]\s*\d+\s*\^\s*\d+\)\s*[<>]=?\s*' + re.escape(pname),
+                    r'\(\(\s*' + re.escape(pname) + r'\s*\|\s*\d+\)\s*&\s*\d+\)\s*<\s*\d+\s*&&\s*'
+                    r'\(\s*' + re.escape(pname) + r'\s*\^\s*\d+\)\s*>>\s*\d+\s*>=\s*0',
+                    r'\(\s*' + re.escape(pname) + r'\s*\|\s*\d+\)\s*==\s*' + re.escape(pname),
+                ]
+                for extra_pat in extra_patterns:
+                    for match in re.finditer(extra_pat, body):
+                        cond = match.group(0)
+                        if _normalize_js_cond(cond) != target_norm and cond not in extra_conds:
+                            extra_conds.append(cond)
+
+                picked = _pick_branch_candidate(
+                    pname,
+                    lambda x_candidate, mask=mask: (x_candidate | mask) == x_candidate,
+                    extra_conds
+                )
+                if picked is None:
+                    continue
+
+                X, triggered = picked
+                F = I ^ X
+                or_branch_meta = (pname, mask, extra_conds)
+                logger.debug(
+                    f"Or-equality branch matched: ({pname}|{mask})=={pname}, "
+                    f"X={X}, extra_hits={len(triggered)}"
+                )
+                break
+
         if X is None:
             # Collect ALL if(COND)label:{ conditions before the split,
             # then try them in reverse order (closest to split first).
@@ -862,6 +969,22 @@ class Cipher:
             pname, mask, extra_conds = mask_branch_meta
             for alt_x in range(X + 1, 256):
                 if (alt_x & mask) != alt_x:
+                    continue
+                try:
+                    if any(_eval_js_branch(cond, pname, alt_x) for cond in extra_conds):
+                        continue
+                except Exception:
+                    continue
+                candidates.append([alt_x, I ^ alt_x])
+                if len(candidates) >= 8:
+                    break
+
+        # For (p|mask)==p branches, keep a few more values that still avoid
+        # the neighboring helper branches.
+        if or_branch_meta is not None:
+            pname, mask, extra_conds = or_branch_meta
+            for alt_x in range(X + 1, 256):
+                if (alt_x | mask) != alt_x:
                     continue
                 try:
                     if any(_eval_js_branch(cond, pname, alt_x) for cond in extra_conds):
