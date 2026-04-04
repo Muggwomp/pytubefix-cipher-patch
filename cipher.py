@@ -882,6 +882,12 @@ class Cipher:
                     r'\(\s*' + re.escape(pname) + r'\s*[+-]\s*\d+\s*\^\s*\d+\)\s*[<>]=?\s*'
                     + re.escape(pname) + r'\s*&&\s*\(\s*' + re.escape(pname)
                     + r'\s*[+-]\s*\d+\s*\^\s*\d+\)\s*[<>]=?\s*' + re.escape(pname),
+                    r'\b' + re.escape(pname) + r'\s*-\s*\d+\s*<<\s*\d+\s*<\s*'
+                    + re.escape(pname) + r'\s*&&\s*\(\s*' + re.escape(pname)
+                    + r'\s*\+\s*\d+\s*&\s*\d+\)\s*>=\s*' + re.escape(pname),
+                    r'\(\s*' + re.escape(pname) + r'\s*\+\s*\d+\s*\^\s*\d+\)\s*>=\s*'
+                    + re.escape(pname) + r'\s*&&\s*' + re.escape(pname)
+                    + r'\s*\+\s*\d+\s*>>\s*\d+\s*<\s*' + re.escape(pname),
                     r'\(\(\s*' + re.escape(pname) + r'\s*\|\s*\d+\)\s*&\s*\d+\)\s*<\s*\d+\s*&&\s*'
                     r'\(\s*' + re.escape(pname) + r'\s*\^\s*\d+\)\s*>>\s*\d+\s*>=\s*0',
                     r'\(\s*' + re.escape(pname) + r'\s*\|\s*\d+\)\s*==\s*' + re.escape(pname),
