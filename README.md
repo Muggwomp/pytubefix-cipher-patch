@@ -13,6 +13,17 @@ This repository contains a patched `cipher.py` for users of `pytubefix` who are 
 Back up your existing `pytubefix/cipher.py`, then replace it with the file from this repository.
 
 ## Notes
-- This is an unofficial community patch and has not yet been submitted upstream. Modified from SzeMeng76's modified cipher.py patch.
+- Modified from SzeMeng76's modified cipher.py patch.
 - This patch was fully created and coded with ChatGPT-5.4 Codex
-- I can't guarantee how long this patch will work as YouTube seems to be updating their players about 1 - 2 weeks at this point.
+- I have set a simple automation that watches for new YouTube players. If a new player is discovered and fails cipher test, will patch as soon as am able.
+- Working players as of 4-9-26:  
+  "2430d1b0"  
+  "57fefa84"  
+  "592af824"  
+  "5a9b5eed"  
+  "6b334ac1"  
+  "8a6e7bc4"  
+  "8c57fc20"  
+  "8c83ec2e"  
+  "f4c47414"  
+  "f4d92f0b"  
