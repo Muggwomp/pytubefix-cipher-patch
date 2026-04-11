@@ -1,5 +1,6 @@
 # pytubefix cipher.py patch
-This repository contains a patched `cipher.py` for users of `pytubefix` who are hitting current YouTube player/cipher extraction failures.
+This repository contains a patched `cipher.py` for users of `pytubefix` who are hitting current YouTube player/cipher extraction failures. 
+Update: An updated node_runner.py is also now included as to cut down on unnecesarry empty nsig retries
 
 ## What this fixes
 - signature function extraction failures
@@ -10,7 +11,8 @@ This repository contains a patched `cipher.py` for users of `pytubefix` who are 
 - `cipher.py` — patched version
 
 ## How to use
-Back up your existing `pytubefix/cipher.py`, then replace it with the file from this repository.
+Back up your existing `pytubefix/cipher.py`, then replace it with the file from this repository.  
+Back up your existing `pytubefix/sig_nsig/node_runner.py`, then replace it with the file from this repository.
 
 ## Notes
 - Modified from SzeMeng76's modified cipher.py patch.
