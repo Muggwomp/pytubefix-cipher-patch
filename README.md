@@ -9,6 +9,7 @@ Update: An updated node_runner.py is also now included as to cut down on unneces
 
 ## File included
 - `cipher.py` — patched version
+- `node_runner.py` — patched version
 
 ## How to use
 Back up your existing `pytubefix/cipher.py`, then replace it with the file from this repository.  
